@@ -42,7 +42,7 @@ pycparser==2.23
 PyJWT==2.9.0
 pyOpenSSL==25.3.0
 python-dateutil==2.9.0.post0
-python-dotenv==1.2.1
+python-dotenv==1.0.0
 python-http-client==3.3.7
 redis==6.4.0
 requests==2.32.4

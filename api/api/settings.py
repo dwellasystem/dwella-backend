@@ -35,6 +35,35 @@ ROOT_DIR = BASE_DIR.parent
 #     else:
 #         print(f"⚠️ .env not found at: {env_path_alt}")
 
+# ✅ FIX: Properly load .env
+try:
+    from dotenv import load_dotenv
+    
+    # Try to load .env from project root
+    env_path = ROOT_DIR / '.env'
+    if env_path.exists():
+        load_dotenv(env_path)
+        print(f"✅ Loaded .env from: {env_path}")
+    else:
+        print(f"⚠️ .env not found at: {env_path}")
+        # Try current directory
+        env_path_alt = BASE_DIR / '.env'
+        if env_path_alt.exists():
+            load_dotenv(env_path_alt)
+            print(f"✅ Loaded .env from: {env_path_alt}")
+        else:
+            print(f"⚠️ .env not found at: {env_path_alt}")
+except ImportError:
+    print("⚠️ python-dotenv not installed. Using system environment variables only.")
+
+# Debug: Show what's loaded
+print("\n🔍 ENVIRONMENT VARIABLES CHECK:")
+print(f"   EMAIL_HOST_PASSWORD: {'SET' if os.environ.get('EMAIL_HOST_PASSWORD') else 'NOT SET'}")
+print(f"   SENDGRID_API_KEY: {'SET' if os.environ.get('SENDGRID_API_KEY') else 'NOT SET'}")
+print(f"   FRONTEND_URL: {os.environ.get('FRONTEND_URL', 'NOT SET')}")
+print()
+
+
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
@@ -163,7 +192,7 @@ EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
 # Add SendGrid configuration
 SENDGRID_API_KEY = os.environ.get('SENDGRID_API_KEY', '')  # Use environment variable
 DEFAULT_FROM_EMAIL = 'dwellasystem@gmail.com'  # Your verified email in SendGrid
-FRONTEND_URL = 'https://dwellahome2.netlify.app/'
+FRONTEND_URL = 'https://dwellahome2.netlify.app'
 
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases

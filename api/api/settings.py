@@ -14,26 +14,26 @@ from pathlib import Path
 from datetime import timedelta
 from celery.schedules import crontab
 import os
-from dotenv import load_dotenv
+# from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 ROOT_DIR = BASE_DIR.parent
 
 # Load .env file from project root
-env_path = ROOT_DIR / '.env'
-if env_path.exists():
-    load_dotenv(env_path)
-    print(f"✅ Loaded .env from: {env_path}")
-else:
-    print(f"⚠️ .env not found at: {env_path}")
-    # Try alternative location (same directory as settings.py)
-    env_path_alt = BASE_DIR / '.env'
-    if env_path_alt.exists():
-        load_dotenv(env_path_alt)
-        print(f"✅ Loaded .env from: {env_path_alt}")
-    else:
-        print(f"⚠️ .env not found at: {env_path_alt}")
+# env_path = ROOT_DIR / '.env'
+# if env_path.exists():
+#     load_dotenv(env_path)
+#     print(f"✅ Loaded .env from: {env_path}")
+# else:
+#     print(f"⚠️ .env not found at: {env_path}")
+#     # Try alternative location (same directory as settings.py)
+#     env_path_alt = BASE_DIR / '.env'
+#     if env_path_alt.exists():
+#         load_dotenv(env_path_alt)
+#         print(f"✅ Loaded .env from: {env_path_alt}")
+#     else:
+#         print(f"⚠️ .env not found at: {env_path_alt}")
 
 
 # Quick-start development settings - unsuitable for production

@@ -34,6 +34,7 @@ class MonthlyBillSerializer(serializers.ModelSerializer):
             "user",
             "user_id", 
             "unit",
+            'construction_bond',
             "unit_id",
             "user_fullname",
             "user_email",
@@ -45,3 +46,20 @@ class MonthlyBillSerializer(serializers.ModelSerializer):
             "created_at"
         ]
         read_only_fields = ["due_status", "created_at"]
+
+
+class ExpenseReflectionSerializer(serializers.Serializer):
+    maintenance = serializers.DecimalField(max_digits=12, decimal_places=2, default=0)
+    security = serializers.DecimalField(max_digits=12, decimal_places=2, default=0)
+    amenities = serializers.DecimalField(max_digits=12, decimal_places=2, default=0)
+    totalExpense = serializers.DecimalField(max_digits=12, decimal_places=2, default=0)
+    totalPaid = serializers.DecimalField(max_digits=12, decimal_places=2, default=0)
+    totalUnpaid = serializers.DecimalField(max_digits=12, decimal_places=2, default=0)
+    building_filter = serializers.CharField(required=False, allow_null=True)
+    other_expenses = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, allow_null=True)
+    total_all_bills = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, allow_null=True)
+    filters_applied = serializers.DictField(required=False, allow_null=True)
+    summary = serializers.DictField(required=False, allow_null=True)
+    chart_data = serializers.DictField(required=False, allow_null=True)
+    detailed_breakdown = serializers.DictField(required=False, allow_null=True)
+    calculation_note = serializers.CharField(required=False, allow_null=True)

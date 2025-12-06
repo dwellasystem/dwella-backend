@@ -15,7 +15,10 @@ from .views import (
     UserFinancialComparisonView,
     UserFinancialReportExportView,
     PaidBillsExcelExportView,
-    PaidBillsFilterOptionsView
+    PaidBillsFilterOptionsView,
+    ExpenseReflectionAPIView,
+    YearlyExpenseAPIView,
+    MonthlyExpenseAPIView
     )
 
 urlpatterns = [
@@ -38,5 +41,9 @@ urlpatterns = [
 
     path('bills/export/paid-bills/excel/', PaidBillsExcelExportView.as_view(), name='export-paid-bills-excel'),
     path('bills/export/paid-bills/options/', PaidBillsFilterOptionsView.as_view(), name='paid-bills-options'),
+
+    path('bills/expense-reflection/', ExpenseReflectionAPIView.as_view(), name='expense-reflection'),
+    path('bills/expense-reflection/yearly/', YearlyExpenseAPIView.as_view(), name='yearly-expense'),
+    path('bills/expense-reflection/monthly/<int:year>/', MonthlyExpenseAPIView.as_view(), name='monthly-expense'),
     
 ]

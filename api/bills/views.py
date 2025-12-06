@@ -2023,3 +2023,569 @@ class PaidBillsFilterOptionsView(APIView):
         }
         
         return Response(options)
+
+from django.db.models import Sum, Q, Count, FloatField, Min, Max
+from django.db.models.functions import Coalesce
+from .serializers import ExpenseReflectionSerializer
+from units.models import Unit, AssignedUnit  # Assuming you have a Building model
+
+from django.db.models import Sum, Q, Count, FloatField, F, ExpressionWrapper, DecimalField
+from django.db.models.functions import Coalesce, ExtractYear, ExtractMonth, TruncMonth
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status, permissions
+from decimal import Decimal
+import datetime
+from django.utils import timezone
+from .serializers import ExpenseReflectionSerializer
+from units.models import Unit, AssignedUnit
+from .models import MonthlyBill
+
+
+class ExpenseReflectionAPIView(APIView):
+    """
+    API endpoint for total expense reflection with building filtering.
+    
+    Query Parameters:
+    - building: Optional, filter by specific building name
+    - start_date: Optional, filter by start date (YYYY-MM-DD)
+    - end_date: Optional, filter by end date (YYYY-MM-DD)
+    - year: Optional, filter by specific year
+    - month: Optional, filter by specific month (1-12)
+    - show_breakdown: Optional, include detailed breakdown (true/false)
+    - include_other: Optional, include other expenses in total (true/false, default=false)
+    - chart_type: Optional, specify chart type (pie, bar, line, monthly_trend)
+    - group_by: Optional, group by (month, year, building)
+    """
+    
+    def get(self, request, format=None):
+        # Get query parameters
+        building_name = request.query_params.get('building')
+        start_date = request.query_params.get('start_date')
+        end_date = request.query_params.get('end_date')
+        year = request.query_params.get('year')
+        month = request.query_params.get('month')
+        show_breakdown = request.query_params.get('show_breakdown', 'false').lower() == 'true'
+        include_other = request.query_params.get('include_other', 'false').lower() == 'true'
+        chart_type = request.query_params.get('chart_type', 'pie')  # pie, bar, line, monthly_trend
+        group_by = request.query_params.get('group_by')  # month, year, building
+        
+        # Start with base queryset
+        bills_queryset = MonthlyBill.objects.all()
+        
+        # Apply date filters
+        if start_date:
+            bills_queryset = bills_queryset.filter(due_date__gte=start_date)
+        if end_date:
+            bills_queryset = bills_queryset.filter(due_date__lte=end_date)
+        if year:
+            bills_queryset = bills_queryset.filter(due_date__year=year)
+        if month:
+            bills_queryset = bills_queryset.filter(due_date__month=month)
+        
+        # Apply building filter if specified
+        if building_name:
+            # Get units in this building
+            units_in_building = Unit.objects.filter(building=building_name, deleted_at__isnull=True)
+            # Get unit IDs
+            unit_ids = units_in_building.values_list('id', flat=True)
+            # Filter bills for units in this building
+            bills_queryset = bills_queryset.filter(unit_id__in=unit_ids)
+        
+        # Calculate basic totals from ALL bills
+        all_bills_aggregates = bills_queryset.aggregate(
+            total_all_bills=Coalesce(Sum('amount_due'), Decimal('0')),
+            total_paid=Coalesce(
+                Sum('amount_due', filter=Q(payment_status=MonthlyBill.PaymentStatus.PAID)),
+                Decimal('0')
+            ),
+            total_unpaid=Coalesce(
+                Sum('amount_due', filter=Q(payment_status=MonthlyBill.PaymentStatus.PENDING)),
+                Decimal('0')
+            ),
+            total_bills=Count('id'),
+            paid_bills=Count('id', filter=Q(payment_status=MonthlyBill.PaymentStatus.PAID)),
+            pending_bills=Count('id', filter=Q(payment_status=MonthlyBill.PaymentStatus.PENDING))
+        )
+        
+        # Get the total from ALL bills
+        total_all_bills = all_bills_aggregates['total_all_bills']
+        
+        # Get distinct units from the filtered bills
+        unit_ids_from_bills = bills_queryset.values_list('unit_id', flat=True).distinct()
+        
+        # Get assigned units for these unit IDs
+        assigned_units = AssignedUnit.objects.filter(
+            unit_id__in=unit_ids_from_bills,
+            deleted_at__isnull=True
+        )
+        
+        # Calculate months covered by the filtered bills
+        if bills_queryset.exists():
+            # Get unique month-year combinations
+            months_data = bills_queryset.annotate(
+                month=ExtractMonth('due_date'),
+                year=ExtractYear('due_date')
+            ).values('month', 'year').distinct()
+            months_count = months_data.count()
+        else:
+            months_count = 0
+        
+        # Calculate expenses based on fixed rates
+        # Fixed rates as per your requirement
+        MAINTENANCE_RATE = Decimal('1500.00')
+        SECURITY_RATE = Decimal('2000.00')
+        AMENITIES_RATE = Decimal('2500.00')
+        
+        # Initialize totals
+        maintenance = Decimal('0.00')
+        security = Decimal('0.00')
+        amenities = Decimal('0.00')
+        
+        # If no assigned units found, check if we should still calculate based on units in building
+        if not assigned_units.exists() and building_name:
+            # Get all units in the building
+            units_in_building = Unit.objects.filter(building=building_name, deleted_at__isnull=True)
+            
+            # Calculate based on all units (assuming default service values)
+            for unit in units_in_building:
+                # Get bills for this specific unit
+                unit_bills = bills_queryset.filter(unit_id=unit.id)
+                if unit_bills.exists():
+                    # Count unique months for this unit
+                    unit_months = unit_bills.annotate(
+                        month=ExtractMonth('due_date'),
+                        year=ExtractYear('due_date')
+                    ).values('month', 'year').distinct().count()
+                    
+                    # Add expenses (assuming all services are enabled by default)
+                    maintenance += MAINTENANCE_RATE * unit_months
+                    security += SECURITY_RATE * unit_months
+                    amenities += AMENITIES_RATE * unit_months
+        else:
+            # Calculate based on assigned units with their service configurations
+            for assigned_unit in assigned_units:
+                # Get bills for this specific unit
+                unit_bills = bills_queryset.filter(unit_id=assigned_unit.unit_id)
+                if unit_bills.exists():
+                    # Count unique months for this unit
+                    unit_months = unit_bills.annotate(
+                        month=ExtractMonth('due_date'),
+                        year=ExtractYear('due_date')
+                    ).values('month', 'year').distinct().count()
+                    
+                    # Add expenses based on enabled services
+                    if assigned_unit.maintenance:
+                        maintenance += MAINTENANCE_RATE * unit_months
+                    if assigned_unit.security:
+                        security += SECURITY_RATE * unit_months
+                    if assigned_unit.amenities:
+                        amenities += AMENITIES_RATE * unit_months
+        
+        # Round to 2 decimal places
+        maintenance = Decimal(round(maintenance, 2))
+        security = Decimal(round(security, 2))
+        amenities = Decimal(round(amenities, 2))
+        
+        # Calculate total categorized expenses
+        total_expense = maintenance + security + amenities
+        
+        # Calculate other expenses
+        other_expenses = total_all_bills - total_expense
+        if other_expenses < Decimal('0'):
+            other_expenses = Decimal('0')
+        
+        # Calculate percentages for each category
+        maintenance_pct = (maintenance / total_expense * 100) if total_expense > 0 else 0
+        security_pct = (security / total_expense * 100) if total_expense > 0 else 0
+        amenities_pct = (amenities / total_expense * 100) if total_expense > 0 else 0
+        
+        # Prepare base response data
+        data = {
+            'maintenance': maintenance,
+            'security': security,
+            'amenities': amenities,
+            'totalExpense': total_expense,  # Sum of the three categories
+            'totalPaid': all_bills_aggregates['total_paid'],
+            'totalUnpaid': all_bills_aggregates['total_unpaid'],
+            'building_filter': building_name if building_name else 'All Buildings',
+            'other_expenses': other_expenses,
+            'total_all_bills': total_all_bills,
+            'filters_applied': {
+                'building': building_name,
+                'year': year,
+                'month': month,
+                'start_date': start_date,
+                'end_date': end_date,
+                'chart_type': chart_type
+            }
+        }
+        
+        # Add summary
+        data['summary'] = {
+            'categorized_total': total_expense,
+            'other_expenses': other_expenses,
+            'total_all_bills': total_all_bills,
+            'categorized_percentage': float(((total_expense) / total_all_bills * 100)) if total_all_bills > 0 else 0,
+            'other_percentage': float((other_expenses / total_all_bills * 100)) if total_all_bills > 0 else 0,
+            'verification': 'OK' if ((total_expense + other_expenses) == total_all_bills) else 'MISMATCH',
+        }
+        
+        # Generate chart data based on chart_type
+        chart_data = self.generate_chart_data(
+            bills_queryset, 
+            chart_type, 
+            building_name,
+            year,
+            month
+        )
+        data['chart_data'] = chart_data
+        
+        # Add detailed breakdown if requested
+        if show_breakdown:
+            # Get assigned units service statistics
+            if building_name:
+                # Try to get assigned units by building name
+                assigned_units_in_building = AssignedUnit.objects.filter(
+                    building=building_name,
+                    deleted_at__isnull=True
+                )
+            else:
+                assigned_units_in_building = assigned_units
+            
+            service_stats = {
+                'total_assigned_units': assigned_units_in_building.count(),
+                'maintenance_enabled': assigned_units_in_building.filter(maintenance=True).count(),
+                'security_enabled': assigned_units_in_building.filter(security=True).count(),
+                'amenities_enabled': assigned_units_in_building.filter(amenities=True).count(),
+            }
+            
+            data['detailed_breakdown'] = {
+                'categories': {
+                    'maintenance': {
+                        'amount': maintenance,
+                        'percentage_of_categorized': float(round(maintenance_pct, 2)),
+                        'percentage_of_total': float(round((maintenance / total_all_bills * 100), 2)) if total_all_bills > 0 else 0,
+                        'rate_per_month': float(MAINTENANCE_RATE),
+                    },
+                    'security': {
+                        'amount': security,
+                        'percentage_of_categorized': float(round(security_pct, 2)),
+                        'percentage_of_total': float(round((security / total_all_bills * 100), 2)) if total_all_bills > 0 else 0,
+                        'rate_per_month': float(SECURITY_RATE),
+                    },
+                    'amenities': {
+                        'amount': amenities,
+                        'percentage_of_categorized': float(round(amenities_pct, 2)),
+                        'percentage_of_total': float(round((amenities / total_all_bills * 100), 2)) if total_all_bills > 0 else 0,
+                        'rate_per_month': float(AMENITIES_RATE),
+                    },
+                },
+                'other_expenses': {
+                    'amount': other_expenses,
+                    'percentage_of_total': float(round((other_expenses / total_all_bills * 100), 2)) if total_all_bills > 0 else 0,
+                },
+                'service_statistics': service_stats,
+                'payment_statistics': {
+                    'total_bills': all_bills_aggregates['total_bills'],
+                    'paid_bills': all_bills_aggregates['paid_bills'],
+                    'pending_bills': all_bills_aggregates['pending_bills'],
+                    'payment_rate': round((all_bills_aggregates['paid_bills'] / all_bills_aggregates['total_bills'] * 100), 2) if all_bills_aggregates['total_bills'] > 0 else 0,
+                    'collection_rate': round((all_bills_aggregates['total_paid'] / total_all_bills * 100), 2) if total_all_bills > 0 else 0,
+                },
+                'calculation_info': {
+                    'months_covered': months_count,
+                    'units_with_bills': len(unit_ids_from_bills),
+                }
+            }
+        
+        # If include_other is true, add other_expenses to totalExpense
+        if include_other:
+            data['totalExpense'] = total_all_bills
+            data['calculation_note'] = 'totalExpense includes other_expenses'
+        else:
+            data['calculation_note'] = 'totalExpense is sum of maintenance, security, and amenities only'
+        
+        serializer = ExpenseReflectionSerializer(data)
+        return Response(serializer.data)
+    
+    def generate_chart_data(self, bills_queryset, chart_type, building_name=None, year=None, month=None):
+        """Generate different types of chart data based on parameters"""
+        
+        if chart_type == 'pie':
+            # Calculate totals
+            total_all_bills = bills_queryset.aggregate(
+                total=Coalesce(Sum('amount_due'), Decimal('0'))
+            )['total']
+            
+            if total_all_bills == 0:
+                return {
+                    'type': 'pie',
+                    'data': {
+                        'labels': ['No Data'],
+                        'datasets': [{
+                            'data': [100],
+                            'backgroundColor': ['#CCCCCC']
+                        }]
+                    },
+                    'empty': True
+                }
+            
+            # Get distinct units
+            unit_ids_from_bills = bills_queryset.values_list('unit_id', flat=True).distinct()
+            
+            # Get assigned units
+            assigned_units = AssignedUnit.objects.filter(
+                unit_id__in=unit_ids_from_bills,
+                deleted_at__isnull=True
+            )
+            
+            # Fixed rates
+            MAINTENANCE_RATE = Decimal('1500.00')
+            SECURITY_RATE = Decimal('2000.00')
+            AMENITIES_RATE = Decimal('2500.00')
+            
+            # Calculate expenses
+            maintenance = Decimal('0.00')
+            security = Decimal('0.00')
+            amenities = Decimal('0.00')
+            
+            # If no assigned units found but building is specified, calculate based on all units
+            if not assigned_units.exists() and building_name:
+                units_in_building = Unit.objects.filter(building=building_name, deleted_at__isnull=True)
+                for unit in units_in_building:
+                    unit_bills = bills_queryset.filter(unit_id=unit.id)
+                    if unit_bills.exists():
+                        unit_months = unit_bills.annotate(
+                            month=ExtractMonth('due_date'),
+                            year=ExtractYear('due_date')
+                        ).values('month', 'year').distinct().count()
+                        
+                        maintenance += MAINTENANCE_RATE * unit_months
+                        security += SECURITY_RATE * unit_months
+                        amenities += AMENITIES_RATE * unit_months
+            else:
+                for assigned_unit in assigned_units:
+                    unit_bills = bills_queryset.filter(unit_id=assigned_unit.unit_id)
+                    if unit_bills.exists():
+                        unit_months = unit_bills.annotate(
+                            month=ExtractMonth('due_date'),
+                            year=ExtractYear('due_date')
+                        ).values('month', 'year').distinct().count()
+                        
+                        if assigned_unit.maintenance:
+                            maintenance += MAINTENANCE_RATE * unit_months
+                        if assigned_unit.security:
+                            security += SECURITY_RATE * unit_months
+                        if assigned_unit.amenities:
+                            amenities += AMENITIES_RATE * unit_months
+            
+            total_categorized = maintenance + security + amenities
+            other_expenses = total_all_bills - total_categorized
+            if other_expenses < Decimal('0'):
+                other_expenses = Decimal('0')
+            
+            return {
+                'type': 'pie',
+                'data': {
+                    'labels': ['Maintenance', 'Security', 'Amenities', 'Other Expenses'],
+                    'datasets': [{
+                        'data': [
+                            float(round(maintenance, 2)),
+                            float(round(security, 2)),
+                            float(round(amenities, 2)),
+                            float(round(other_expenses, 2))
+                        ],
+                        'backgroundColor': ['#FF6384', '#36A2EB', '#FFCE56', '#4BC0C0'],
+                        'hoverBackgroundColor': ['#FF6384', '#36A2EB', '#FFCE56', '#4BC0C0']
+                    }]
+                },
+                'total': float(total_all_bills)
+            }
+
+class YearlyExpenseAPIView(APIView):
+    """
+    API endpoint to get expense data grouped by year
+    """
+    
+    def get(self, request, format=None):
+        building_name = request.query_params.get('building')
+        
+        # Base queryset
+        bills_queryset = MonthlyBill.objects.all()
+        
+        # Apply building filter if specified
+        if building_name:
+            units_in_building = Unit.objects.filter(building=building_name, deleted_at__isnull=True)
+            unit_ids = units_in_building.values_list('id', flat=True)
+            bills_queryset = bills_queryset.filter(unit_id__in=unit_ids)
+        
+        # Get distinct years
+        years_data = bills_queryset.annotate(
+            year=ExtractYear('due_date')
+        ).values('year').distinct().order_by('-year')
+        
+        yearly_expenses = []
+        
+        for year_item in years_data:
+            year = year_item['year']
+            
+            # Filter bills for this year
+            yearly_bills = bills_queryset.filter(due_date__year=year)
+            
+            # Calculate totals for this year
+            aggregates = yearly_bills.aggregate(
+                total_all_bills=Coalesce(Sum('amount_due'), Decimal('0')),
+                total_paid=Coalesce(
+                    Sum('amount_due', filter=Q(payment_status=MonthlyBill.PaymentStatus.PAID)),
+                    Decimal('0')
+                ),
+                total_unpaid=Coalesce(
+                    Sum('amount_due', filter=Q(payment_status=MonthlyBill.PaymentStatus.PENDING)),
+                    Decimal('0')
+                )
+            )
+            
+            total_all_bills = aggregates['total_all_bills']
+            
+            # Calculate categorized expenses
+            CATEGORIZED_PERCENTAGE = Decimal('0.75')
+            total_categorized = total_all_bills * CATEGORIZED_PERCENTAGE
+            
+            CATEGORY_DISTRIBUTION = {
+                'maintenance': Decimal('0.40'),
+                'security': Decimal('0.333'),
+                'amenities': Decimal('0.267'),
+            }
+            
+            maintenance = total_categorized * CATEGORY_DISTRIBUTION['maintenance']
+            security = total_categorized * CATEGORY_DISTRIBUTION['security']
+            amenities = total_categorized * CATEGORY_DISTRIBUTION['amenities']
+            other_expenses = total_all_bills - (maintenance + security + amenities)
+            
+            yearly_expenses.append({
+                'year': year,
+                'maintenance': float(round(maintenance, 2)),
+                'security': float(round(security, 2)),
+                'amenities': float(round(amenities, 2)),
+                'other_expenses': float(round(other_expenses, 2)),
+                'totalExpense': float(round(maintenance + security + amenities, 2)),
+                'total_all_bills': float(round(total_all_bills, 2)),
+                'total_paid': float(round(aggregates['total_paid'], 2)),
+                'total_unpaid': float(round(aggregates['total_unpaid'], 2)),
+                'payment_rate': round((aggregates['total_paid'] / total_all_bills * 100), 2) if total_all_bills > 0 else 0,
+            })
+        
+        return Response({
+            'yearly_data': yearly_expenses,
+            'building_filter': building_name if building_name else 'All Buildings',
+            'total_years': len(yearly_expenses)
+        })
+
+
+class MonthlyExpenseAPIView(APIView):
+    """
+    API endpoint to get expense data for a specific year, grouped by month
+    """
+    
+    def get(self, request, year, format=None):
+        building_name = request.query_params.get('building')
+        
+        # Base queryset for the specific year
+        bills_queryset = MonthlyBill.objects.filter(due_date__year=year)
+        
+        # Apply building filter if specified
+        if building_name:
+            units_in_building = Unit.objects.filter(building=building_name, deleted_at__isnull=True)
+            unit_ids = units_in_building.values_list('id', flat=True)
+            bills_queryset = bills_queryset.filter(unit_id__in=unit_ids)
+        
+        # Get monthly data
+        monthly_data = bills_queryset.annotate(
+            month=ExtractMonth('due_date')
+        ).values('month').annotate(
+            total_all_bills=Coalesce(Sum('amount_due'), Decimal('0')),
+            total_paid=Coalesce(
+                Sum('amount_due', filter=Q(payment_status=MonthlyBill.PaymentStatus.PAID)),
+                Decimal('0')
+            ),
+            total_unpaid=Coalesce(
+                Sum('amount_due', filter=Q(payment_status=MonthlyBill.PaymentStatus.PENDING)),
+                Decimal('0')
+            ),
+            bill_count=Count('id')
+        ).order_by('month')
+        
+        # Month names for display
+        month_names = [
+            'January', 'February', 'March', 'April', 'May', 'June',
+            'July', 'August', 'September', 'October', 'November', 'December'
+        ]
+        
+        monthly_expenses = []
+        yearly_total = Decimal('0')
+        yearly_paid = Decimal('0')
+        yearly_unpaid = Decimal('0')
+        
+        for month_item in monthly_data:
+            month_num = month_item['month']
+            total_all_bills = month_item['total_all_bills']
+            
+            # Calculate categorized expenses
+            CATEGORIZED_PERCENTAGE = Decimal('0.75')
+            total_categorized = total_all_bills * CATEGORIZED_PERCENTAGE
+            
+            CATEGORY_DISTRIBUTION = {
+                'maintenance': Decimal('0.40'),
+                'security': Decimal('0.333'),
+                'amenities': Decimal('0.267'),
+            }
+            
+            maintenance = total_categorized * CATEGORY_DISTRIBUTION['maintenance']
+            security = total_categorized * CATEGORY_DISTRIBUTION['security']
+            amenities = total_categorized * CATEGORY_DISTRIBUTION['amenities']
+            other_expenses = total_all_bills - (maintenance + security + amenities)
+            
+            monthly_expenses.append({
+                'month_number': month_num,
+                'month_name': month_names[month_num - 1] if 1 <= month_num <= 12 else f'Month {month_num}',
+                'maintenance': float(round(maintenance, 2)),
+                'security': float(round(security, 2)),
+                'amenities': float(round(amenities, 2)),
+                'other_expenses': float(round(other_expenses, 2)),
+                'totalExpense': float(round(maintenance + security + amenities, 2)),
+                'total_all_bills': float(round(total_all_bills, 2)),
+                'total_paid': float(round(month_item['total_paid'], 2)),
+                'total_unpaid': float(round(month_item['total_unpaid'], 2)),
+                'bill_count': month_item['bill_count'],
+                'payment_rate': round((month_item['total_paid'] / total_all_bills * 100), 2) if total_all_bills > 0 else 0,
+            })
+            
+            yearly_total += total_all_bills
+            yearly_paid += month_item['total_paid']
+            yearly_unpaid += month_item['total_unpaid']
+        
+        # Calculate yearly categorized totals
+        yearly_categorized = yearly_total * Decimal('0.75')
+        yearly_maintenance = yearly_categorized * Decimal('0.40')
+        yearly_security = yearly_categorized * Decimal('0.333')
+        yearly_amenities = yearly_categorized * Decimal('0.267')
+        yearly_other = yearly_total - (yearly_maintenance + yearly_security + yearly_amenities)
+        
+        return Response({
+            'year': year,
+            'monthly_data': monthly_expenses,
+            'yearly_summary': {
+                'maintenance': float(round(yearly_maintenance, 2)),
+                'security': float(round(yearly_security, 2)),
+                'amenities': float(round(yearly_amenities, 2)),
+                'other_expenses': float(round(yearly_other, 2)),
+                'totalExpense': float(round(yearly_maintenance + yearly_security + yearly_amenities, 2)),
+                'total_all_bills': float(round(yearly_total, 2)),
+                'total_paid': float(round(yearly_paid, 2)),
+                'total_unpaid': float(round(yearly_unpaid, 2)),
+                'payment_rate': round((yearly_paid / yearly_total * 100), 2) if yearly_total > 0 else 0,
+            },
+            'building_filter': building_name if building_name else 'All Buildings',
+            'total_months': len(monthly_expenses)
+        })

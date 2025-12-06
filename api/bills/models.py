@@ -33,6 +33,13 @@ class MonthlyBill(models.Model):
         choices=DueStatus.choices,
         default=DueStatus.UPCOMING,
     )
+    # New field for construction bonds
+    construction_bond = models.DecimalField(
+        max_digits=10, 
+        decimal_places=2, 
+        default=0.00,
+        help_text="Construction bond amount for unit reconstruction/renovation"
+    )
     sms_sent = models.BooleanField(default=False)
     unit = models.ForeignKey(Unit, blank=True, null=True, on_delete=models.CASCADE, related_name='bill_unit')
     created_at = models.DateTimeField(auto_now_add=True)
@@ -56,6 +63,10 @@ class MonthlyBill(models.Model):
             self.amount_due = self.calculate_total_amount_due()
         self.update_due_status()
         super().save(*args, **kwargs)
+    
+    def get_total_amount(self):
+        """Get total amount including construction bond"""
+        return self.amount_due + self.construction_bond
 
     def __str__(self):
         return f"Bill(user={self.user.username}, due={self.due_date}, status={self.payment_status}/{self.due_status})"

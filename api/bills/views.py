@@ -1,5 +1,6 @@
 from rest_framework import generics, filters, status
 from rest_framework.permissions import AllowAny, IsAuthenticated
+from datetime import datetime, date
 from .models import MonthlyBill
 from units.models import AssignedUnit, Unit
 from rest_framework.views import APIView
@@ -1953,7 +1954,7 @@ class PaidBillsExcelExportView(APIView):
                 ("Total Amount", f"₱{sum(bill.amount_due for bill in bills):,.2f}"),
                 ("Average Amount", f"₱{sum(bill.amount_due for bill in bills) / len(bills):,.2f}"),
                 ("Date Range", f"{bills.first().due_date} to {bills.last().due_date}"),
-                ("Generated On", datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+                ("Generated On", datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
             ]
             
             for i, (label, value) in enumerate(summary_data, 1):
